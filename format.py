@@ -36,10 +36,10 @@ def format_report(rows: list[RankRow], date_from: str, date_to: str) -> str:
         key=lambda r: (r.dividend_yield_pct if r.dividend_yield_pct is not None else -1),
         reverse=True,
     )
-    s2 = ["*② 配当利回り順（上位20社内）*", "```", "コード 企業名                利回り  年間配当"]
+    s2 = ["*② 配当利回り順（上位20社内）*", "```", "①順 コード 企業名                利回り  年間配当"]
     for r in by_div:
         s2.append(
-            f"{r.code}  {r.name[:14]:<14}  {_fmt_yield(r.dividend_yield_pct):>7}  {_fmt_div(r.dividend_per_share):>10}"
+            f"{r.rank:>2}  {r.code}  {r.name[:14]:<14}  {_fmt_yield(r.dividend_yield_pct):>7}  {_fmt_div(r.dividend_per_share):>10}"
         )
     s2.append("```")
 
@@ -49,9 +49,9 @@ def format_report(rows: list[RankRow], date_from: str, date_to: str) -> str:
         key=lambda r: (r.revenue_jpy if r.revenue_jpy is not None else -1),
         reverse=True,
     )
-    s3 = ["*③ 売上高順（上位20社内）*", "```", "コード 企業名                売上高"]
+    s3 = ["*③ 売上高順（上位20社内）*", "```", "①順 コード 企業名                売上高"]
     for r in by_rev:
-        s3.append(f"{r.code}  {r.name[:14]:<14}  {_fmt_revenue(r.revenue_jpy):>12}")
+        s3.append(f"{r.rank:>2}  {r.code}  {r.name[:14]:<14}  {_fmt_revenue(r.revenue_jpy):>12}")
     s3.append("```")
 
     footer = "_データ源: J-Quants API (JPX公式)_"
