@@ -1,101 +1,47 @@
-"""J-Quants API client. Handles auth token refresh and data endpoints."""
+"""J-Quants V2 client; returns V1-compat field names."""
 from __future__ import annotations
-
 import os
-import time
 from dataclasses import dataclass
-from typing import Any
-
 import requests
 
-BASE = "https://api.jquants.com/v1"
-
+BASE = "https://api.jquants.com/v2"
 
 @dataclass
 class JQuantsClient:
-    email: str
-    password: str
-    _id_token: str | None = None
-    _id_token_exp: float = 0.0
-
-    def _refresh_token(self) -> None:
-        r = requests.post(
-            f"{BASE}/token/auth_user",
-            json={"mailaddress": self.email, "password": self.password},
-            timeout=30,
-        )
-        r.raise_for_status()
-        refresh_token = r.json()["refreshToken"]
-
-        r2 = requests.post(
-            f"{BASE}/token/auth_refresh",
-            params={"refreshtoken": refresh_token},
-            timeout=30,
-        )
-        r2.raise_for_status()
-        self._id_token = r2.json()["idToken"]
-        # idToken is valid ~24h; refresh proactively at 20h
-        self._id_token_exp = time.time() + 20 * 3600
-
-    def _headers(self) -> dict[str, str]:
-        if not self._id_token or time.time() >= self._id_token_exp:
-            self._refresh_token()
-        return {"Authorization": f"Bearer {self._id_token}"}
-
-    def _get(self, path: str, params: dict[str, Any] | None = None) -> dict:
-        r = requests.get(f"{BASE}{path}", headers=self._headers(), params=params, timeout=60)
+    api_key: str
+    def _h(self):
+        return {"x-api-key": self.api_key}
+    def _g(self, p, params=None):
+        r = requests.get(f"{BASE}{p}", headers=self._h(), params=params, timeout=60)
         r.raise_for_status()
         return r.json()
-
-    def _get_paginated(self, path: str, params: dict[str, Any], key: str) -> list[dict]:
-        """Follow pagination_key until exhausted."""
-        out: list[dict] = []
-        p = dict(params)
+    def _gp(self, p, params):
+        out = []
+        q = dict(params)
         while True:
-            data = self._get(path, p)
-            out.extend(data.get(key, []))
-            pk = data.get("pagination_key")
+            d = self._g(p, q)
+            out.extend(d.get("data", []))
+            pk = d.get("pagination_key")
             if not pk:
                 return out
-            p["pagination_key"] = pk
-
-    # ---- endpoints ----
-
-    def listed_info(self, date: str | None = None) -> list[dict]:
-        """All listed issues. Filter by MarketCode='0111' for Prime."""
+            q["pagination_key"] = pk
+    def listed_info(self, date=None):
         params = {"date": date} if date else {}
-        return self._get_paginated("/listed/info", params, "info")
+        return [{"Code": r.get("Code"), "CompanyName": r.get("CoName"), "MarketCode": r.get("Mkt"), "MarketCodeName": r.get("MktNm"), "Sector17Code": r.get("S17"), "Sector33Code": r.get("S33"), "ScaleCategory": r.get("ScaleCat")} for r in self._gp("/equities/master", params)]
+    def daily_quotes(self, code=None, date=None, from_=None, to=None):
+        def n(d):
+            return f"{d[:4]}-{d[4:6]}-{d[6:]}" if d and len(d) == 8 and "-" not in d else d
+        params = {}
+        if code: params["code"] = code
+        if date: params["date"] = n(date)
+        if from_: params["from"] = n(from_)
+        if to: params["to"] = n(to)
+        return [{"Code": r.get("Code"), "Date": r.get("Date"), "Close": r.get("C"), "AdjustmentClose": r.get("AdjC"), "Open": r.get("O"), "High": r.get("H"), "Low": r.get("L"), "Volume": r.get("Vo")} for r in self._gp("/equities/bars/daily", params)]
+    def statements(self, code):
+        return [{"DisclosedDate": r.get("DiscDate"), "NetSales": r.get("Sales"), "ResultDividendPerShareAnnual": r.get("DivAnn"), "ForecastDividendPerShareAnnual": r.get("FDivAnn") or r.get("NxFDivAnn"), "OperatingProfit": r.get("OP"), "Profit": r.get("NP"), "EarningsPerShare": r.get("EPS")} for r in self._gp("/fins/summary", {"code": code})]
 
-    def daily_quotes(self, code: str | None = None, date: str | None = None,
-                     from_: str | None = None, to: str | None = None) -> list[dict]:
-        params: dict[str, Any] = {}
-        if code:
-            params["code"] = code
-        if date:
-            params["date"] = date
-        if from_:
-            params["from"] = from_
-        if to:
-            params["to"] = to
-        return self._get_paginated("/prices/daily_quotes", params, "daily_quotes")
-
-    def statements(self, code: str) -> list[dict]:
-        """Financial statements (requires Light plan or above)."""
-        return self._get_paginated("/fins/statements", {"code": code}, "statements")
-
-
-
-
-def from_env() -> JQuantsClient:
-    rt = os.environ.get("JQUANTS_REFRESH_TOKEN")
-    if rt:
-        r = requests.post(f"{BASE}/token/auth_refresh", params={"refreshtoken": rt},
-  timeout=30)
-        r.raise_for_status()
-        c = JQuantsClient(email="", password="")
-        c._id_token = r.json()["idToken"]
-        c._id_token_exp = time.time() + 20 * 3600
-        return c
-    email = os.environ["JQUANTS_EMAIL"]
-    password = os.environ["JQUANTS_PASSWORD"]
-    return JQuantsClient(email=email, password=password)
+def from_env():
+    k = os.environ.get("JQUANTS_API_KEY")
+    if not k:
+        raise RuntimeError("JQUANTS_API_KEY not set")
+    return JQuantsClient(api_key=k)
