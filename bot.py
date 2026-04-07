@@ -25,6 +25,9 @@ from format import format_report
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# Suppress httpx URL logging — it leaks the bot token in journal/stdout
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("kabuka")
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -42,31 +45,37 @@ def parse_period(text: str) -> tuple[str, str] | None:
 
 
 async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+    msg = update.effective_message
+    if msg is None:
+        return
+    await msg.reply_text(
         "株価下落bot稼働中。\n期間を送信してください。\n例: `2026-03-01 2026-03-31`",
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def handle_message(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text or ""
+    msg = update.effective_message
+    if msg is None:
+        return
+    text = msg.text or ""
     period = parse_period(text)
     if not period:
-        await update.message.reply_text(
+        await msg.reply_text(
             "期間を認識できませんでした。例: `2026-03-01 2026-03-31`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
 
     date_from, date_to = period
-    await update.message.reply_text(f"取得中... {date_from} → {date_to}")
+    await msg.reply_text(f"取得中... {date_from} → {date_to}")
 
     try:
         client = jquants.from_env()
         rows = top20_decliners(client, date_from, date_to)
     except Exception as e:
         log.exception("analysis failed")
-        await update.message.reply_text(f"エラー: {e}")
+        await msg.reply_text(f"エラー: {e}")
         return
 
     # Save raw JSON
@@ -83,7 +92,7 @@ async def handle_message(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     log.info("saved %s", out)
 
     report = format_report(rows, date_from, date_to)
-    await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
+    await msg.reply_text(report, parse_mode=ParseMode.MARKDOWN)
 
 
 def main() -> None:
