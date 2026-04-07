@@ -29,6 +29,11 @@ def _prime_issues(client: JQuantsClient) -> pd.DataFrame:
     df = pd.DataFrame(info)
     # J-Quants returns 'MarketCode' or 'MarketCodeName'; use code for reliability
     df = df[df["MarketCode"] == PRIME_MARKET_CODE].copy()
+    # listed_info may return multiple historical snapshots per Code; keep the latest.
+    if "Date" in df.columns:
+        df = df.sort_values("Date").drop_duplicates(subset=["Code"], keep="last")
+    else:
+        df = df.drop_duplicates(subset=["Code"], keep="last")
     return df[["Code", "CompanyName"]].rename(columns={"Code": "code", "CompanyName": "name"})
 
 
@@ -41,7 +46,9 @@ def _price_at(client: JQuantsClient, date: str) -> pd.DataFrame:
     price_col = "AdjustmentClose" if "AdjustmentClose" in df.columns else "Close"
     df = df[["Code", price_col]].rename(columns={"Code": "code", price_col: "price"})
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
-    return df.dropna(subset=["price"])
+    df = df.dropna(subset=["price"])
+    # Safety: daily_quotes should be 1 row per code per date, but dedupe defensively.
+    return df.drop_duplicates(subset=["code"], keep="last")
 
 
 def top20_decliners(client: JQuantsClient, date_from: str, date_to: str) -> list[RankRow]:
