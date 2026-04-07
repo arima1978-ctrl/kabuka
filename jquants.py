@@ -84,7 +84,18 @@ class JQuantsClient:
         return self._get_paginated("/fins/statements", {"code": code}, "statements")
 
 
+
+
 def from_env() -> JQuantsClient:
+    rt = os.environ.get("JQUANTS_REFRESH_TOKEN")
+    if rt:
+        r = requests.post(f"{BASE}/token/auth_refresh", params={"refreshtoken": rt},
+  timeout=30)
+        r.raise_for_status()
+        c = JQuantsClient(email="", password="")
+        c._id_token = r.json()["idToken"]
+        c._id_token_exp = time.time() + 20 * 3600
+        return c
     email = os.environ["JQUANTS_EMAIL"]
     password = os.environ["JQUANTS_PASSWORD"]
     return JQuantsClient(email=email, password=password)
