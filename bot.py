@@ -30,7 +30,7 @@ from telegram.ext import (
 from telegram_bot_calendar import LSTEP, DetailedTelegramCalendar
 
 import jquants
-from analyze import top20_decliners, to_dicts
+from analyze import top_decliners_growing, to_dicts
 from format import format_report
 
 load_dotenv()
@@ -154,7 +154,7 @@ async def _run_analysis(update: Update, date_from: str, date_to: str) -> None:
     await msg.reply_text(f"取得中... {date_from} → {date_to}")
     try:
         client = jquants.from_env()
-        rows = top20_decliners(client, date_from, date_to)
+        rows = top_decliners_growing(client, date_from, date_to, pool_size=100)
     except Exception as e:
         log.exception("analysis failed")
         await msg.reply_text(f"エラー: {e}")

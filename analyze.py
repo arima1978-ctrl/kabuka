@@ -22,6 +22,7 @@ class RankRow:
     dividend_per_share: float | None   # 円/株（年間予想）
     dividend_yield_pct: float | None   # %
     revenue_jpy: float | None          # 円（最新年度売上高）
+    revenue_history: list[float] | None = None  # 古い→新しい（直近4年）
 
 
 def _prime_issues(client: JQuantsClient) -> pd.DataFrame:
@@ -51,8 +52,18 @@ def _price_at(client: JQuantsClient, date: str) -> pd.DataFrame:
     return df.drop_duplicates(subset=["code"], keep="last")
 
 
-def top20_decliners(client: JQuantsClient, date_from: str, date_to: str) -> list[RankRow]:
-    """Return top-20 Prime decliners between two trading dates (YYYY-MM-DD)."""
+def top_decliners_growing(
+    client: JQuantsClient,
+    date_from: str,
+    date_to: str,
+    pool_size: int = 100,
+) -> list[RankRow]:
+    """Top decliners filtered by strictly monotonic 3yr revenue growth.
+
+    1. プライム値下がり率上位 ``pool_size`` 社を抽出
+    2. 過去4年分の年次売上が厳密に単調増加 (3年連続前年比プラス) の銘柄のみ残す
+    3. 値下がり率順 (降順=下落の大きい順) で全件返す
+    """
     prime = _prime_issues(client)
     p_from = _price_at(client, date_from.replace("-", ""))
     p_to = _price_at(client, date_to.replace("-", ""))
@@ -62,13 +73,15 @@ def top20_decliners(client: JQuantsClient, date_from: str, date_to: str) -> list
              .merge(p_to, on="code", suffixes=("_from", "_to"))
     )
     merged["change_pct"] = (merged["price_to"] - merged["price_from"]) / merged["price_from"] * 100
-    merged = merged.sort_values("change_pct").head(20).reset_index(drop=True)
+    pool = merged.sort_values("change_pct").head(pool_size).reset_index(drop=True)
 
     rows: list[RankRow] = []
-    for i, r in merged.iterrows():
-        div_ps, div_yield, revenue = _enrich_financials(client, r["code"], r["price_to"])
+    for _, r in pool.iterrows():
+        div_ps, div_yield, revenue, history = _enrich_financials(client, r["code"], r["price_to"])
+        if not _is_strictly_growing(history):
+            continue
         rows.append(RankRow(
-            rank=i + 1,
+            rank=0,  # 後で振り直す
             code=str(r["code"]),
             name=str(r["name"]),
             price_from=float(r["price_from"]),
@@ -77,22 +90,40 @@ def top20_decliners(client: JQuantsClient, date_from: str, date_to: str) -> list
             dividend_per_share=div_ps,
             dividend_yield_pct=div_yield,
             revenue_jpy=revenue,
+            revenue_history=history,
         ))
+
+    rows.sort(key=lambda x: x.change_pct)
+    for i, row in enumerate(rows, start=1):
+        row.rank = i
     return rows
 
 
-def _enrich_financials(client: JQuantsClient, code: str,
-                       current_price: float) -> tuple[float | None, float | None, float | None]:
-    """Latest annual dividend forecast + revenue. Requires Light plan."""
+# Backwards-compat alias (returns top 20 without growth filter).
+def top20_decliners(client: JQuantsClient, date_from: str, date_to: str) -> list[RankRow]:
+    return top_decliners_growing(client, date_from, date_to, pool_size=20)
+
+
+def _is_strictly_growing(history: list[float] | None) -> bool:
+    """直近4年分の売上が y0 < y1 < y2 < y3 を満たすか。"""
+    if not history or len(history) < 4:
+        return False
+    last4 = history[-4:]
+    return all(b > a for a, b in zip(last4, last4[1:]))
+
+
+def _enrich_financials(
+    client: JQuantsClient, code: str, current_price: float
+) -> tuple[float | None, float | None, float | None, list[float] | None]:
+    """配当・売上・売上履歴を取得。Light プラン必須。"""
     try:
         stmts = client.statements(code)
     except Exception:
-        return None, None, None
+        return None, None, None, None
     if not stmts:
-        return None, None, None
+        return None, None, None, None
 
     df = pd.DataFrame(stmts)
-    # Annual forecast rows: TypeOfDocument contains 'FinancialStatements'
     df["DisclosedDate"] = pd.to_datetime(df.get("DisclosedDate"), errors="coerce")
     df = df.sort_values("DisclosedDate", ascending=False)
 
@@ -106,15 +137,34 @@ def _enrich_financials(client: JQuantsClient, code: str,
                     continue
         return None
 
-    # Forecast annual dividend per share (full year)
     div_ps = _num("ForecastDividendPerShareAnnual") or _num("ResultDividendPerShareAnnual")
     revenue = _num("NetSales") or _num("Revenue") or _num("OperatingRevenue1")
+    history = _annual_revenue_history(df)
 
     div_yield = None
     if div_ps and current_price:
         div_yield = round(div_ps / current_price * 100, 2)
 
-    return div_ps, div_yield, revenue
+    return div_ps, div_yield, revenue, history
+
+
+def _annual_revenue_history(df: pd.DataFrame) -> list[float] | None:
+    """開示履歴から年次売上シリーズを再構築 (古い→新しい)。
+
+    各開示年について最大の NetSales を採用し、不完全な場合は None を返す。
+    """
+    if "NetSales" not in df.columns:
+        return None
+    work = df[["DisclosedDate", "NetSales"]].copy()
+    work["NetSales"] = pd.to_numeric(work["NetSales"], errors="coerce")
+    work = work.dropna(subset=["DisclosedDate", "NetSales"])
+    if work.empty:
+        return None
+    work["year"] = work["DisclosedDate"].dt.year
+    yearly = work.groupby("year")["NetSales"].max().sort_index()
+    if yearly.empty:
+        return None
+    return [float(v) for v in yearly.tolist()]
 
 
 def to_dicts(rows: Iterable[RankRow]) -> list[dict]:
