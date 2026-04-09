@@ -1,7 +1,7 @@
 """Compute top-20 price decliners in TSE Prime for a given period, with dividend/revenue."""
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from typing import Iterable
 
 import pandas as pd
@@ -57,12 +57,11 @@ def top_decliners_growing(
     date_from: str,
     date_to: str,
     pool_size: int = 100,
-) -> list[RankRow]:
-    """Top decliners filtered by strictly monotonic 3yr revenue growth.
+) -> tuple[list[RankRow], list[RankRow]]:
+    """値下がり率上位プールと、3年連続増収フィルタ後リストを返す。
 
-    1. プライム値下がり率上位 ``pool_size`` 社を抽出
-    2. 過去4年分の年次売上が厳密に単調増加 (3年連続前年比プラス) の銘柄のみ残す
-    3. 値下がり率順 (降順=下落の大きい順) で全件返す
+    Returns:
+        (pool_rows, filtered_rows) — どちらも値下がり率昇順で順位付け済み
     """
     prime = _prime_issues(client)
     p_from = _price_at(client, date_from.replace("-", ""))
@@ -75,13 +74,12 @@ def top_decliners_growing(
     merged["change_pct"] = (merged["price_to"] - merged["price_from"]) / merged["price_from"] * 100
     pool = merged.sort_values("change_pct").head(pool_size).reset_index(drop=True)
 
-    rows: list[RankRow] = []
+    pool_rows: list[RankRow] = []
+    filtered_rows: list[RankRow] = []
     for _, r in pool.iterrows():
         div_ps, div_yield, revenue, history = _enrich_financials(client, r["code"], r["price_to"])
-        if not _is_strictly_growing(history):
-            continue
-        rows.append(RankRow(
-            rank=0,  # 後で振り直す
+        row = RankRow(
+            rank=0,
             code=str(r["code"]),
             name=str(r["name"]),
             price_from=float(r["price_from"]),
@@ -91,17 +89,22 @@ def top_decliners_growing(
             dividend_yield_pct=div_yield,
             revenue_jpy=revenue,
             revenue_history=history,
-        ))
+        )
+        pool_rows.append(row)
+        if _is_strictly_growing(history):
+            filtered_rows.append(replace(row))
 
-    rows.sort(key=lambda x: x.change_pct)
-    for i, row in enumerate(rows, start=1):
-        row.rank = i
-    return rows
+    for lst in (pool_rows, filtered_rows):
+        lst.sort(key=lambda x: x.change_pct)
+        for i, row in enumerate(lst, start=1):
+            row.rank = i
+    return pool_rows, filtered_rows
 
 
-# Backwards-compat alias (returns top 20 without growth filter).
+# Backwards-compat alias (returns top 20 unfiltered).
 def top20_decliners(client: JQuantsClient, date_from: str, date_to: str) -> list[RankRow]:
-    return top_decliners_growing(client, date_from, date_to, pool_size=20)
+    pool, _ = top_decliners_growing(client, date_from, date_to, pool_size=20)
+    return pool
 
 
 def _is_strictly_growing(history: list[float] | None) -> bool:

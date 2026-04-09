@@ -21,6 +21,26 @@ def _fmt_div(v: float | None) -> str:
     return f"{v:.2f}円" if v is not None else "—"
 
 
+def format_pool_report(rows: list[RankRow], date_from: str, date_to: str) -> str:
+    header = (
+        "📉 *東証プライム 値下がり率上位100社*\n"
+        f"期間: `{date_from}` → `{date_to}`\n"
+        f"件数: *{len(rows)}社*\n"
+    )
+    if not rows:
+        return header + "\n該当銘柄なし。"
+    s = ["```", "順位 コード 企業名                値下率   利回り       売上高"]
+    for r in rows:
+        s.append(
+            f"{r.rank:>3} {r.code}  {r.name[:14]:<14}  "
+            f"{r.change_pct:>6.2f}%  "
+            f"{_fmt_yield(r.dividend_yield_pct):>7}  "
+            f"{_fmt_revenue(r.revenue_jpy):>12}"
+        )
+    s.append("```")
+    return "\n".join([header, *s])
+
+
 def format_report(rows: list[RankRow], date_from: str, date_to: str) -> str:
     header = (
         "📉 *東証プライム 値下がり×増収銘柄*\n"

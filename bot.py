@@ -31,7 +31,7 @@ from telegram_bot_calendar import LSTEP, DetailedTelegramCalendar
 
 import jquants
 from analyze import top_decliners_growing, to_dicts
-from format import format_report
+from format import format_pool_report, format_report
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -154,7 +154,7 @@ async def _run_analysis(update: Update, date_from: str, date_to: str) -> None:
     await msg.reply_text(f"取得中... {date_from} → {date_to}")
     try:
         client = jquants.from_env()
-        rows = top_decliners_growing(client, date_from, date_to, pool_size=100)
+        pool, rows = top_decliners_growing(client, date_from, date_to, pool_size=100)
     except Exception as e:
         log.exception("analysis failed")
         await msg.reply_text(f"エラー: {e}")
@@ -164,7 +164,12 @@ async def _run_analysis(update: Update, date_from: str, date_to: str) -> None:
     out = DATA_DIR / f"{date_from}_{date_to}_{stamp}.json"
     out.write_text(
         json.dumps(
-            {"from": date_from, "to": date_to, "rows": to_dicts(rows)},
+            {
+                "from": date_from,
+                "to": date_to,
+                "pool": to_dicts(pool),
+                "rows": to_dicts(rows),
+            },
             ensure_ascii=False,
             indent=2,
         ),
@@ -172,8 +177,37 @@ async def _run_analysis(update: Update, date_from: str, date_to: str) -> None:
     )
     log.info("saved %s", out)
 
+    pool_report = format_pool_report(pool, date_from, date_to)
+    for chunk in _split_for_telegram(pool_report):
+        await msg.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
     report = format_report(rows, date_from, date_to)
     await msg.reply_text(report, parse_mode=ParseMode.MARKDOWN)
+
+
+def _split_for_telegram(text: str, limit: int = 3500) -> list[str]:
+    """Telegramの4096文字制限を避けるため、コードブロック単位で分割。"""
+    if len(text) <= limit:
+        return [text]
+    lines = text.split("\n")
+    chunks: list[str] = []
+    buf: list[str] = []
+    in_code = False
+    cur_len = 0
+    for line in lines:
+        add = len(line) + 1
+        if cur_len + add > limit and buf:
+            if in_code:
+                buf.append("```")
+            chunks.append("\n".join(buf))
+            buf = ["```"] if in_code else []
+            cur_len = sum(len(x) + 1 for x in buf)
+        buf.append(line)
+        cur_len += add
+        if line.strip() == "```":
+            in_code = not in_code
+    if buf:
+        chunks.append("\n".join(buf))
+    return chunks
 
 
 async def handle_message(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
